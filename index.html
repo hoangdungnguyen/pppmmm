@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pac-Man Coin Collecting Game</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #000;
+        }
+
+        video {
+            position: absolute;
+            z-index: 0;
+            transform: scaleX(-1);  /* Flip the video horizontally */
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        #scoreboard, #timer, #game-timer {
+            position: absolute;
+            color: white;
+            font-size: 20px;
+            font-family: Arial, sans-serif;
+            z-index: 2;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+        }
+
+        #scoreboard {
+            top: 10px;
+            left: 10px;
+        }
+
+        #timer {
+            top: 10px;
+            right: 10px;
+        }
+
+        #game-timer {
+            top: 40px;
+            right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="scoreboard">Score: 0</div>
+    <div id="timer">Round Time Left: 20s</div>
+    <div id="game-timer">Game Time Left: 3:00</div>
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="output"></canvas>
+
+    <!-- Pac-Man GIF -->
+    <img id="pacman" src="pacman.gif" alt="Pac-Man" style="display: none;">
+    <!-- Coin Image -->
+    <img id="coin" src="coin.jpg" alt="Coin" style="display: none;">
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet"></script>
+
+    <script>
+        let net;
+        let video, canvas, ctx, pacmanImg, coinImg;
+        let score = 0;
+        let coins = [];  // Store the positions of coins
+        let gridCols, gridRows;  // Dynamic grid size based on aspect ratio
+        let pacmanX = 0, pacmanY = 0;  // Pac-Man's grid position
+        let roundTime = 20;  // Time limit for each round
+        let totalGameTime = 180;  // 3-minute countdown timer (in seconds)
+        let currentRoundTime = roundTime;
+        let roundInterval;
+        let gameInterval;
+
+        // Set up the camera and ensure proper dimensions
+        async function setupCamera() {
+            video = document.getElementById('webcam');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        // Set video width to match viewport width (100vw)
+                        const viewportWidth = window.innerWidth;
+                        const aspectRatio = video.videoHeight / video.videoWidth;
+                        const viewportHeight = viewportWidth * aspectRatio;
+
+                        // Set both CSS and intrinsic video width and height
+                        video.width = viewportWidth;
+                        video.height = viewportHeight;
+                        video.style.width = `${viewportWidth}px`;
+                        video.style.height = `${viewportHeight}px`;
+
+                        // Calculate grid size based on the video aspect ratio
+                        gridCols = 10;  // Fixed number of columns
+                        gridRows = Math.floor(gridCols * (video.videoHeight / video.videoWidth));  // Adjust rows to match aspect ratio
+
+                        resolve(video);
+                    };
+                });
+            } catch (error) {
+                console.error("Error accessing camera: ", error);
+            }
+        }
+
+        async function loadPosenet() {
+            try {
+                net = await posenet.load();
+                startGame();  // Start the game loop
+            } catch (error) {
+                console.error("Error loading PoseNet model: ", error);
+            }
+        }
+
+        function startGame() {
+            pacmanImg = document.getElementById('pacman');
+            coinImg = document.getElementById('coin');
+            canvas = document.getElementById('output');
+            ctx = canvas.getContext('2d');
+            canvas.width = video.width;
+            canvas.height = video.height;
+
+            resetRound();  // Start the first round
+            roundInterval = setInterval(updateRoundTimer, 1000);  // Timer for rounds
+            gameInterval = setInterval(updateGameTimer, 1000);  // Timer for the entire game
+            detectPose();
+        }
+
+        function resetRound() {
+            currentRoundTime = roundTime;  // Reset round timer
+            document.getElementById("timer").innerText = `Round Time Left: ${currentRoundTime}s`;
+            coins = [];
+            generateRandomCoins();  // Generate random coins between 20% and 50% of the grid cells
+        }
+
+        function generateRandomCoins() {
+            const totalCells = gridCols * gridRows;
+            const numCoins = Math.floor(Math.random() * (totalCells * 0.3)) + Math.floor(totalCells * 0.2); // 20% to 50% of the grid
+            for (let i = 0; i < numCoins; i++) {
+                let coinX = Math.floor(Math.random() * gridCols);
+                let coinY = Math.floor(Math.random() * gridRows);
+                coins.push({ x: coinX, y: coinY });
+            }
+        }
+
+        function updateRoundTimer() {
+            currentRoundTime--;
+            document.getElementById("timer").innerText = `Round Time Left: ${currentRoundTime}s`;
+
+            if (currentRoundTime === 0 || coins.length === 0) {
+                resetRound();  // Reset round if time is up or no more coins
+            }
+        }
+
+        function updateGameTimer() {
+            totalGameTime--;
+            let minutes = Math.floor(totalGameTime / 60);
+            let seconds = totalGameTime % 60;
+            document.getElementById("game-timer").innerText = `Game Time Left: ${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+
+            if (totalGameTime <= 0) {
+                clearInterval(gameInterval);
+                clearInterval(roundInterval);
+                alert(`Game over! Final score: ${score}`);
+            }
+        }
+
+        async function detectPose() {
+            const pose = await net.estimateSinglePose(video, { flipHorizontal: false });
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const nose = pose.keypoints.find(point => point.part === 'nose');
+
+            if (nose && nose.score > 0.6) {
+                let { x, y } = nose.position;
+
+                // Convert nose position to grid coordinates
+                pacmanX = Math.floor((canvas.width - x) / (canvas.width / gridCols));
+                pacmanY = Math.floor(y / (canvas.height / gridRows));
+
+                // Draw Pac-Man (nose tracker)
+                ctx.drawImage(pacmanImg, pacmanX * (canvas.width / gridCols), pacmanY * (canvas.height / gridRows), 50, 50);
+
+                // Check for coin collection
+                for (let i = 0; i < coins.length; i++) {
+                    if (coins[i].x === pacmanX && coins[i].y === pacmanY) {
+                        score++;
+                        document.getElementById("scoreboard").innerText = `Score: ${score}`;
+                        coins.splice(i, 1);  // Remove collected coin
+                    }
+                }
+
+                // Draw remaining coins
+                for (let coin of coins) {
+                    ctx.drawImage(coinImg, coin.x * (canvas.width / gridCols), coin.y * (canvas.height / gridRows), 30, 30);
+                }
+            }
+
+            requestAnimationFrame(detectPose);  // Continue detection loop
+        }
+
+        window.addEventListener('load', async () => {
+            await setupCamera();
+            await loadPosenet();
+        });
+    </script>
+</body>
+</html>
